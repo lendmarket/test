@@ -72,7 +72,8 @@ async function login(d) {
     return reply({ error: '아이디 또는 비밀번호가 올바르지 않습니다.' }, 401);
   }
 
-  const email = adminEmail();
+  let email;
+  try { email = adminEmail(); } catch (e) { return reply({ error: `인증 메일 주소가 설정되지 않았습니다. Vercel 환경변수 ADMIN_EMAIL을 추가해 주세요.` }, 500); }
   const code = newOtpCode();
   const nonce = newNonce();
   state.fails = 0;
@@ -81,7 +82,8 @@ async function login(d) {
   state.otp = { nonce, exp: now + OTP_TTL, tries: 0 };
   await saveState(state);
 
-  await sendMail({
+  // 비밀번호를 통과한 경우에만 도달하므로, 설정 문제 해결을 위해 실패 원인을 알려줍니다.
+  try { await sendMail({
     to: email,
     subject: `[BizRental 관리자] 인증번호 ${code}`,
     html: `<div style="font-family:sans-serif;font-size:15px">
@@ -90,7 +92,10 @@ async function login(d) {
       <p style="color:#6b7280">5분 안에 입력해 주세요. 본인이 요청하지 않았다면 즉시 관리자 비밀번호를 변경하세요.</p>
       <p style="color:#6b7280;font-size:12px">요청 시각: ${new Date().toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' })}</p>
     </div>`,
-  });
+  }); } catch (e) {
+    console.error('[admin:otp-mail]', e);
+    return reply({ error: `인증 메일 발송에 실패했습니다. (${String(e?.message || e).slice(0, 300)})` }, 502);
+  }
 
   return reply({ ok: true, email: maskEmail(email) }, 200, [
     // 인증번호 해시는 서명된 쿠키에 담음 → 서버리스 인스턴스가 달라도 검증 가능 (해시는 서버 비밀키로만 계산 가능)
