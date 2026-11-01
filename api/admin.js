@@ -1,15 +1,13 @@
 // 관리자 API
-//   GET  /api/admin                         → 로그인 상태 확인
-//   POST /api/admin {action:'login', id, password}   → 1단계: 아이디/비밀번호 확인 후 메일로 6자리 인증번호 발송
-//   POST /api/admin {action:'verify', code}          → 2단계: 인증번호 확인 후 관리자 세션 발급
-//   POST /api/admin {action:'password', current, next} → 비밀번호 변경 (로그인 필요)
+//   GET  /api/admin                                   → 로그인 상태 확인
+//   POST /api/admin {action:'login', id, password}    → 아이디/비밀번호 확인 후 관리자 세션 발급
+//   POST /api/admin {action:'password', current, next} → 비밀번호 변경 (로그인 필요, Blob 저장소 필요)
 //   POST /api/admin {action:'logout'}
 import { sendMail, clean } from './_lib/mail.js';
 import {
-  loadState, saveState, checkPassword, hashPassword,
-  newOtpCode, otpHash, newNonce, sign, unsign, safeEqual,
-  getCookie, cookie, clearCookie, adminEmail, maskEmail, reply, hasStore,
-  SESSION_COOKIE, PENDING_COOKIE, SESSION_TTL, OTP_TTL, OTP_MAX_TRIES, LOGIN_MAX_FAILS, LOCK_TIME,
+  loadState, saveState, checkPassword, hashPassword, sign, unsign, safeEqual,
+  getCookie, cookie, clearCookie, adminEmail, reply, hasStore,
+  SESSION_COOKIE, SESSION_TTL, LOGIN_MAX_FAILS, LOCK_TIME,
 } from './_lib/admin.js';
 
 /** 유효한 세션이면 state 반환, 아니면 null */
@@ -27,7 +25,7 @@ export async function GET(request) {
   try {
     const state = await currentSession(request);
     if (!state) return reply({ ok: false }, 401);
-    return reply({ ok: true, id: state.id, email: maskEmail(adminEmail()), isDefault: !state.pwHash, canChangePassword: hasStore() });
+    return reply({ ok: true, id: state.id, isDefault: !state.pwHash, canChangePassword: hasStore() });
   } catch (e) {
     console.error('[admin:get]', e);
     return reply({ error: '서버 오류가 발생했습니다.' }, 500);
@@ -42,9 +40,8 @@ export async function POST(request) {
   try {
     switch (d.action) {
       case 'login': return await login(d);
-      case 'verify': return await verify(request, d);
       case 'password': return await changePassword(request, d);
-      case 'logout': return reply({ ok: true }, 200, [clearCookie(SESSION_COOKIE), clearCookie(PENDING_COOKIE)]);
+      case 'logout': return reply({ ok: true }, 200, [clearCookie(SESSION_COOKIE)]);
       default: return reply({ error: '잘못된 요청입니다.' }, 400);
     }
   } catch (e) {
@@ -53,7 +50,7 @@ export async function POST(request) {
   }
 }
 
-// ── 1단계: 아이디/비밀번호 ──
+// ── 로그인 ──
 async function login(d) {
   const id = clean(d.id, 50);
   const password = String(d.password ?? '').slice(0, 200);
@@ -72,65 +69,12 @@ async function login(d) {
     return reply({ error: '아이디 또는 비밀번호가 올바르지 않습니다.' }, 401);
   }
 
-  let email;
-  try { email = adminEmail(); } catch (e) { return reply({ error: `인증 메일 주소가 설정되지 않았습니다. Vercel 환경변수 ADMIN_EMAIL을 추가해 주세요.` }, 500); }
-  const code = newOtpCode();
-  const nonce = newNonce();
-  state.fails = 0;
-  state.lockUntil = 0;
-  const hash = otpHash(code, nonce);
-  state.otp = { nonce, exp: now + OTP_TTL, tries: 0 };
-  await saveState(state);
-
-  // 비밀번호를 통과한 경우에만 도달하므로, 설정 문제 해결을 위해 실패 원인을 알려줍니다.
-  try { await sendMail({
-    to: email,
-    subject: `[BizRental 관리자] 인증번호 ${code}`,
-    html: `<div style="font-family:sans-serif;font-size:15px">
-      <p>관리자 로그인 인증번호입니다.</p>
-      <p style="font-size:32px;font-weight:800;letter-spacing:8px;color:#1f4fd8;margin:16px 0">${code}</p>
-      <p style="color:#6b7280">5분 안에 입력해 주세요. 본인이 요청하지 않았다면 즉시 관리자 비밀번호를 변경하세요.</p>
-      <p style="color:#6b7280;font-size:12px">요청 시각: ${new Date().toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' })}</p>
-    </div>`,
-  }); } catch (e) {
-    console.error('[admin:otp-mail]', e);
-    return reply({ error: `인증 메일 발송에 실패했습니다. (${String(e?.message || e).slice(0, 300)})` }, 502);
-  }
-
-  return reply({ ok: true, email: maskEmail(email) }, 200, [
-    // 인증번호 해시는 서명된 쿠키에 담음 → 서버리스 인스턴스가 달라도 검증 가능 (해시는 서버 비밀키로만 계산 가능)
-    cookie(PENDING_COOKIE, sign({ t: 'pending', n: nonce, h: hash, exp: now + OTP_TTL }), OTP_TTL),
-  ]);
-}
-
-// ── 2단계: 인증번호 ──
-async function verify(request, d) {
-  const code = String(d.code ?? '').replace(/\D/g, '');
-  const p = unsign(getCookie(request, PENDING_COOKIE));
-  const state = await loadState();
-  const otp = state.otp;
-  const restart = { error: '인증 시간이 만료되었습니다. 처음부터 다시 로그인해 주세요.', restart: true };
-
-  if (!p || p.t !== 'pending' || !p.h) return reply(restart, 401, [clearCookie(PENDING_COOKIE)]);
-  const tracked = otp && otp.nonce === p.n; // 저장소에 기록된 인증 요청인지
-  // 저장소가 있으면 1회용·시도횟수 제한을 엄격히 적용 (성공/5회 실패 시 otp 삭제됨)
-  if (hasStore() && !tracked) return reply(restart, 401, [clearCookie(PENDING_COOKIE)]);
-
-  if (code.length !== 6 || !safeEqual(otpHash(code, p.n), p.h)) {
-    if (!tracked) return reply({ error: '인증번호가 올바르지 않습니다.' }, 401);
-    otp.tries += 1;
-    if (otp.tries >= OTP_MAX_TRIES) {
-      state.otp = null;
-      await saveState(state);
-      return reply({ error: '인증번호를 5회 잘못 입력했습니다. 처음부터 다시 로그인해 주세요.', restart: true }, 401, [clearCookie(PENDING_COOKIE)]);
-    }
+  if (state.fails || state.lockUntil) {
+    state.fails = 0;
+    state.lockUntil = 0;
     await saveState(state);
-    return reply({ error: `인증번호가 올바르지 않습니다. (남은 횟수 ${OTP_MAX_TRIES - otp.tries}회)` }, 401);
   }
-
-  state.otp = null;
-  await saveState(state);
-  return reply({ ok: true }, 200, [sessionCookie(state), clearCookie(PENDING_COOKIE)]);
+  return reply({ ok: true }, 200, [sessionCookie(state)]);
 }
 
 // ── 비밀번호 변경 ──
@@ -150,13 +94,14 @@ async function changePassword(request, d) {
   state.pwVer = (state.pwVer || 0) + 1;
   await saveState(state);
 
+  // 메일 설정이 되어 있으면 변경 알림 (없거나 실패해도 변경은 완료)
   try {
     await sendMail({
       to: adminEmail(),
       subject: '[BizRental 관리자] 비밀번호가 변경되었습니다',
       html: `<p>관리자 비밀번호가 변경되었습니다. (${new Date().toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' })})</p><p>본인이 변경하지 않았다면 즉시 확인해 주세요.</p>`,
     });
-  } catch (e) { console.error('[admin:password-mail]', e); } // 알림 실패는 변경 결과에 영향 없음
+  } catch (e) { console.error('[admin:password-mail]', e); }
 
   // 현재 브라우저만 새 세션으로 유지, 다른 기기 세션은 무효화
   return reply({ ok: true }, 200, [sessionCookie(state)]);

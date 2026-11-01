@@ -1,5 +1,5 @@
 // 관리자 인증 공통 로직 (엔드포인트 아님)
-// - 관리자 정보(아이디, 비밀번호 해시, 인증번호 상태)는 Vercel Blob에 AES-256-GCM으로 암호화해 저장합니다.
+// - 관리자 정보(아이디, 비밀번호 해시, 로그인 실패 횟수)는 Vercel Blob에 AES-256-GCM으로 암호화해 저장합니다.
 // - 세션은 서버 비밀키로 서명한 HttpOnly 쿠키입니다.
 import crypto from 'node:crypto';
 import { list, put, del } from '@vercel/blob';
@@ -9,25 +9,23 @@ export const DEFAULT_ID = 'admin';
 const DEFAULT_PASSWORD = '123456';
 
 export const SESSION_COOKIE = 'admin_session';
-export const PENDING_COOKIE = 'admin_pending';
 export const SESSION_TTL = 8 * 60 * 60 * 1000; // 8시간
-export const OTP_TTL = 5 * 60 * 1000; // 5분
-export const OTP_MAX_TRIES = 5;
 export const LOGIN_MAX_FAILS = 5;
 export const LOCK_TIME = 10 * 60 * 1000; // 10분
 
 // ───────── 비밀키 ─────────
-// 서버에만 있는 값에서 파생 (소스코드에 비밀키를 넣지 않음 — 공개 저장소이므로)
+// 서버에만 있는 환경변수에서 파생 (공개 저장소이므로 소스에 비밀키를 넣지 않음)
+// 환경변수가 하나도 없으면 Blob도 없다는 뜻이고, 그때는 기본 비밀번호로만 로그인할 수 있으므로
+// 기본 비밀번호에서 파생한 키를 씁니다. (기본 비밀번호를 아는 사람은 어차피 로그인 가능 → 보안 수준 동일)
+// Blob을 연결해 비밀번호를 바꾸면 BLOB_READ_WRITE_TOKEN이 비밀키가 됩니다.
 function baseSecret() {
-  const s = process.env.ADMIN_SECRET || process.env.BLOB_READ_WRITE_TOKEN || process.env.RESEND_API_KEY;
-  if (!s) throw new Error('ADMIN_SECRET, BLOB_READ_WRITE_TOKEN, RESEND_API_KEY 중 하나는 환경변수로 설정되어야 합니다.');
-  return s;
+  return process.env.ADMIN_SECRET || process.env.BLOB_READ_WRITE_TOKEN || process.env.RESEND_API_KEY || `default-password:${DEFAULT_PASSWORD}`;
 }
 
 /** Blob 저장소 연결 여부. 미연결 시 기본 비밀번호로만 로그인 가능, 비밀번호 변경 불가 */
 export const hasStore = () => !!process.env.BLOB_READ_WRITE_TOKEN;
 let memState = null; // 저장소 미연결 시 인스턴스 메모리(로그인 실패 횟수 등 최선 노력용)
-const defaultState = () => ({ id: DEFAULT_ID, pwHash: null, pwVer: 0, fails: 0, lockUntil: 0, otp: null });
+const defaultState = () => ({ id: DEFAULT_ID, pwHash: null, pwVer: 0, fails: 0, lockUntil: 0 });
 const subKey = purpose => crypto.createHash('sha256').update(`bizrental-admin:${purpose}:${baseSecret()}`).digest();
 const hmac = (purpose, data) => crypto.createHmac('sha256', subKey(purpose)).update(data).digest('base64url');
 
@@ -91,11 +89,6 @@ export function checkPassword(state, pw) {
   const test = crypto.scryptSync(pw, Buffer.from(salt, 'base64'), 64);
   return crypto.timingSafeEqual(test, Buffer.from(hash, 'base64'));
 }
-
-// ───────── 인증번호 ─────────
-export const newOtpCode = () => String(crypto.randomInt(0, 1_000_000)).padStart(6, '0');
-export const otpHash = (code, nonce) => hmac('otp', `${nonce}:${code}`);
-export const newNonce = () => crypto.randomBytes(16).toString('base64url');
 
 // ───────── 서명 토큰 / 쿠키 ─────────
 export function sign(payload) {

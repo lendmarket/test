@@ -13,11 +13,9 @@
 .panel__sub b { color: var(--ink); }
 .panel__hint { color: var(--muted); font-size: 13px; }
 .panel__hint code { background: var(--bg-alt); padding: 1px 6px; border-radius: 4px; }
-.panel__timer { color: var(--primary); font-size: 14px; font-weight: 500; }
 .panel label { display: grid; gap: 6px; font-weight: 500; font-size: 15px; }
 .panel input { width: 100%; font: inherit; padding: 12px 14px; border: 1px solid var(--line); border-radius: 10px; background: #fff; }
 .panel input:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px rgba(31,79,216,.15); }
-.panel input.otp { font-size: 26px; font-weight: 700; letter-spacing: 10px; text-align: center; }
 .panel .btn { justify-self: start; }
 .panel .btn--block { justify-self: stretch; }
 

@@ -2,8 +2,7 @@ import './style.css';
 import './admin.css';
 
 const $ = s => document.querySelector(s);
-const views = ['#loading', '#loginForm', '#otpForm', '#dashboard'];
-let timer;
+const views = ['#loading', '#loginForm', '#dashboard'];
 
 function show(sel) {
   views.forEach(v => { $(v).hidden = v !== sel; });
@@ -41,13 +40,12 @@ async function loadDashboard() {
   const r = await api();
   if (!r.ok) return show('#loginForm');
   $('#infoId').textContent = r.id;
-  $('#infoEmail').textContent = r.email;
   $('#defaultWarn').hidden = !r.isDefault;
   setMsg($('#pwForm'), r.canChangePassword ? '' : '※ Vercel에 Blob 저장소가 연결되지 않아 지금은 비밀번호를 변경할 수 없습니다. (로그인은 기본 비밀번호로 가능)');
   show('#dashboard');
 }
 
-// ── 1단계 ──
+// ── 로그인 ──
 $('#loginForm').addEventListener('submit', e => {
   e.preventDefault();
   const f = e.currentTarget;
@@ -59,52 +57,8 @@ $('#loginForm').addEventListener('submit', e => {
     const r = await api({ action: 'login', id, password });
     if (!r.ok) return setMsg(f, r.error || '로그인에 실패했습니다.');
     f.elements.namedItem('password').value = '';
-    $('#otpEmail').textContent = r.email;
-    $('#otpForm').reset();
-    setMsg($('#otpForm'));
-    startTimer(5 * 60);
-    show('#otpForm');
-  });
-});
-
-function startTimer(sec) {
-  clearInterval(timer);
-  const el = $('#otpTimer');
-  const tick = () => {
-    if (sec <= 0) { el.textContent = '인증 시간이 만료되었습니다. 처음으로 돌아가 다시 시도해 주세요.'; return clearInterval(timer); }
-    el.textContent = `남은 시간 ${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, '0')}`;
-    sec--;
-  };
-  tick();
-  timer = setInterval(tick, 1000);
-}
-
-// ── 2단계 ──
-$('#otpForm').code.addEventListener('input', e => { e.target.value = e.target.value.replace(/\D/g, '').slice(0, 6); });
-
-$('#otpForm').addEventListener('submit', e => {
-  e.preventDefault();
-  const f = e.currentTarget;
-  const code = f.code.value;
-  if (!/^\d{6}$/.test(code)) return setMsg(f, '6자리 숫자를 입력해 주세요.');
-  setMsg(f);
-  busy(f, async () => {
-    const r = await api({ action: 'verify', code });
-    if (!r.ok) {
-      setMsg(f, r.error || '인증에 실패했습니다.');
-      if (r.restart) clearInterval(timer);
-      f.code.select();
-      return;
-    }
-    clearInterval(timer);
     await loadDashboard();
   });
-});
-
-$('#otpBack').addEventListener('click', () => {
-  clearInterval(timer);
-  setMsg($('#loginForm'));
-  show('#loginForm');
 });
 
 // ── 비밀번호 변경 ──
