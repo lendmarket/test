@@ -17,11 +17,17 @@ export const LOGIN_MAX_FAILS = 5;
 export const LOCK_TIME = 10 * 60 * 1000; // 10분
 
 // ───────── 비밀키 ─────────
+// 서버에만 있는 값에서 파생 (소스코드에 비밀키를 넣지 않음 — 공개 저장소이므로)
 function baseSecret() {
-  const s = process.env.ADMIN_SECRET || process.env.BLOB_READ_WRITE_TOKEN;
-  if (!s) throw new Error('ADMIN_SECRET 또는 BLOB_READ_WRITE_TOKEN 환경변수가 필요합니다.');
+  const s = process.env.ADMIN_SECRET || process.env.BLOB_READ_WRITE_TOKEN || process.env.RESEND_API_KEY;
+  if (!s) throw new Error('ADMIN_SECRET, BLOB_READ_WRITE_TOKEN, RESEND_API_KEY 중 하나는 환경변수로 설정되어야 합니다.');
   return s;
 }
+
+/** Blob 저장소 연결 여부. 미연결 시 기본 비밀번호로만 로그인 가능, 비밀번호 변경 불가 */
+export const hasStore = () => !!process.env.BLOB_READ_WRITE_TOKEN;
+let memState = null; // 저장소 미연결 시 인스턴스 메모리(로그인 실패 횟수 등 최선 노력용)
+const defaultState = () => ({ id: DEFAULT_ID, pwHash: null, pwVer: 0, fails: 0, lockUntil: 0, otp: null });
 const subKey = purpose => crypto.createHash('sha256').update(`bizrental-admin:${purpose}:${baseSecret()}`).digest();
 const hmac = (purpose, data) => crypto.createHmac('sha256', subKey(purpose)).update(data).digest('base64url');
 
@@ -51,8 +57,9 @@ async function stateBlobs() {
 }
 
 export async function loadState() {
+  if (!hasStore()) return structuredClone(memState || defaultState());
   const [latest] = await stateBlobs();
-  if (!latest) return { id: DEFAULT_ID, pwHash: null, pwVer: 0, fails: 0, lockUntil: 0, otp: null };
+  if (!latest) return defaultState();
   const res = await fetch(latest.url, { cache: 'no-store' });
   if (!res.ok) throw new Error(`관리자 정보 읽기 실패 (${res.status})`);
   // 복호화 실패 시 기본값으로 되돌리지 않고 오류를 냅니다(기본 비밀번호로 초기화되는 것 방지).
@@ -60,6 +67,7 @@ export async function loadState() {
 }
 
 export async function saveState(state) {
+  if (!hasStore()) { memState = structuredClone(state); return; }
   const old = await stateBlobs();
   // 매번 새 URL로 저장 → CDN 캐시 문제 없음. 이후 이전 버전 삭제.
   await put(`${STATE_PREFIX}.json`, encrypt(state), {

@@ -8,7 +8,7 @@ import { sendMail, clean } from './_lib/mail.js';
 import {
   loadState, saveState, checkPassword, hashPassword,
   newOtpCode, otpHash, newNonce, sign, unsign, safeEqual,
-  getCookie, cookie, clearCookie, adminEmail, maskEmail, reply,
+  getCookie, cookie, clearCookie, adminEmail, maskEmail, reply, hasStore,
   SESSION_COOKIE, PENDING_COOKIE, SESSION_TTL, OTP_TTL, OTP_MAX_TRIES, LOGIN_MAX_FAILS, LOCK_TIME,
 } from './_lib/admin.js';
 
@@ -27,7 +27,7 @@ export async function GET(request) {
   try {
     const state = await currentSession(request);
     if (!state) return reply({ ok: false }, 401);
-    return reply({ ok: true, id: state.id, email: maskEmail(adminEmail()), isDefault: !state.pwHash });
+    return reply({ ok: true, id: state.id, email: maskEmail(adminEmail()), isDefault: !state.pwHash, canChangePassword: hasStore() });
   } catch (e) {
     console.error('[admin:get]', e);
     return reply({ error: '서버 오류가 발생했습니다.' }, 500);
@@ -49,7 +49,7 @@ export async function POST(request) {
     }
   } catch (e) {
     console.error(`[admin:${d.action}]`, e);
-    return reply({ error: '서버 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.', debug: String(e?.message || e).slice(0, 300) }, 500);
+    return reply({ error: '서버 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.' }, 500);
   }
 }
 
@@ -77,7 +77,8 @@ async function login(d) {
   const nonce = newNonce();
   state.fails = 0;
   state.lockUntil = 0;
-  state.otp = { nonce, hash: otpHash(code, nonce), exp: now + OTP_TTL, tries: 0 };
+  const hash = otpHash(code, nonce);
+  state.otp = { nonce, exp: now + OTP_TTL, tries: 0 };
   await saveState(state);
 
   await sendMail({
@@ -92,7 +93,8 @@ async function login(d) {
   });
 
   return reply({ ok: true, email: maskEmail(email) }, 200, [
-    cookie(PENDING_COOKIE, sign({ t: 'pending', n: nonce, exp: now + OTP_TTL }), OTP_TTL),
+    // 인증번호 해시는 서명된 쿠키에 담음 → 서버리스 인스턴스가 달라도 검증 가능 (해시는 서버 비밀키로만 계산 가능)
+    cookie(PENDING_COOKIE, sign({ t: 'pending', n: nonce, h: hash, exp: now + OTP_TTL }), OTP_TTL),
   ]);
 }
 
@@ -104,10 +106,13 @@ async function verify(request, d) {
   const otp = state.otp;
   const restart = { error: '인증 시간이 만료되었습니다. 처음부터 다시 로그인해 주세요.', restart: true };
 
-  if (!p || p.t !== 'pending' || !otp || otp.nonce !== p.n || otp.exp < Date.now()) {
-    return reply(restart, 401, [clearCookie(PENDING_COOKIE)]);
-  }
-  if (code.length !== 6 || !safeEqual(otpHash(code, otp.nonce), otp.hash)) {
+  if (!p || p.t !== 'pending' || !p.h) return reply(restart, 401, [clearCookie(PENDING_COOKIE)]);
+  const tracked = otp && otp.nonce === p.n; // 저장소에 기록된 인증 요청인지
+  // 저장소가 있으면 1회용·시도횟수 제한을 엄격히 적용 (성공/5회 실패 시 otp 삭제됨)
+  if (hasStore() && !tracked) return reply(restart, 401, [clearCookie(PENDING_COOKIE)]);
+
+  if (code.length !== 6 || !safeEqual(otpHash(code, p.n), p.h)) {
+    if (!tracked) return reply({ error: '인증번호가 올바르지 않습니다.' }, 401);
     otp.tries += 1;
     if (otp.tries >= OTP_MAX_TRIES) {
       state.otp = null;
@@ -127,6 +132,7 @@ async function verify(request, d) {
 async function changePassword(request, d) {
   const state = await currentSession(request);
   if (!state) return reply({ error: '로그인이 필요합니다.', restart: true }, 401);
+  if (!hasStore()) return reply({ error: '비밀번호를 저장할 Blob 저장소가 연결되지 않아 변경할 수 없습니다. Vercel에서 Blob을 연결한 뒤 이용해 주세요.' }, 400);
 
   const current = String(d.current ?? '');
   const next = String(d.next ?? '');

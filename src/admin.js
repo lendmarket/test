@@ -43,6 +43,7 @@ async function loadDashboard() {
   $('#infoId').textContent = r.id;
   $('#infoEmail').textContent = r.email;
   $('#defaultWarn').hidden = !r.isDefault;
+  setMsg($('#pwForm'), r.canChangePassword ? '' : '※ Vercel에 Blob 저장소가 연결되지 않아 지금은 비밀번호를 변경할 수 없습니다. (로그인은 기본 비밀번호로 가능)');
   show('#dashboard');
 }
 
