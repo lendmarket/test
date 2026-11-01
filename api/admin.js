@@ -49,7 +49,7 @@ export async function POST(request) {
     }
   } catch (e) {
     console.error(`[admin:${d.action}]`, e);
-    return reply({ error: '서버 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.' }, 500);
+    return reply({ error: '서버 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.', debug: String(e?.message || e).slice(0, 300) }, 500);
   }
 }
 
