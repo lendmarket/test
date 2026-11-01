@@ -15,10 +15,10 @@ export function table(rows) {
     .join('')}</table>`;
 }
 
-/** Resend(https://resend.com) API로 관리자에게 알림 메일 발송 */
-export async function sendMail({ subject, html, replyTo }) {
+/** Resend(https://resend.com) API로 메일 발송 (to 생략 시 NOTIFY_EMAIL로) */
+export async function sendMail({ subject, html, replyTo, to: toOverride }) {
   const key = process.env.RESEND_API_KEY;
-  const to = process.env.NOTIFY_EMAIL;
+  const to = toOverride || process.env.NOTIFY_EMAIL;
   if (!key || !to) throw new Error('환경변수 RESEND_API_KEY / NOTIFY_EMAIL 이 설정되지 않았습니다.');
 
   const res = await fetch('https://api.resend.com/emails', {
