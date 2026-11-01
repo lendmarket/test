@@ -6,7 +6,7 @@ import { list, put, del } from '@vercel/blob';
 
 const STATE_PREFIX = 'admin/state';
 export const DEFAULT_ID = 'admin';
-const DEFAULT_PASSWORD = '1234';
+const DEFAULT_PASSWORD = '123456';
 
 export const SESSION_COOKIE = 'admin_session';
 export const PENDING_COOKIE = 'admin_pending';
